@@ -16,11 +16,11 @@ export function SubmitButton() {
       {pending ? (
         <>
           <Loader2 className="animate-spin mr-2 h-4 w-4" />
-          Loading...
+          Carregando...
         </>
       ) : (
         <>
-          Get Started
+          Assinar com 7 dias grátis
           <ArrowRight className="ml-2 h-4 w-4" />
         </>
       )}

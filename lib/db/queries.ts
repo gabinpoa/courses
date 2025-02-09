@@ -1,8 +1,21 @@
-import { desc, and, eq, isNull } from 'drizzle-orm';
+import { desc, and, eq, isNull, asc } from 'drizzle-orm';
 import { db } from './drizzle';
-import { activityLogs, teamMembers, teams, users } from './schema';
+import {
+  activityLogs,
+  lessons,
+  modules,
+  teamMembers,
+  teams,
+  users,
+} from './schema';
 import { cookies } from 'next/headers';
 import { verifyToken } from '@/lib/auth/session';
+import {
+  getPriceById,
+  getProductById,
+  getValidSubscriptionByCustomerIdAndProductId,
+} from '../payments/stripe';
+import { get } from 'http';
 
 export async function getUser() {
   const sessionCookie = (await cookies()).get('session');
@@ -78,6 +91,36 @@ export async function getUserWithTeam(userId: number) {
   return result[0];
 }
 
+export async function getTeamCustomerId(teamId: number) {
+  const result = await db.query.teams.findFirst({
+    where: eq(teams.id, teamId),
+    columns: {
+      stripeCustomerId: true,
+    },
+  });
+
+  return result?.stripeCustomerId || null;
+}
+
+export async function getCustomerId() {
+  const user = await getUser();
+  if (!user) {
+    throw new Error('User not authenticated', { cause: 'not_authenticated' });
+  }
+
+  const teamId = (await getUserWithTeam(user.id)).teamId;
+  if (!teamId) {
+    throw new Error('User is not part of any team');
+  }
+
+  const result = await getTeamCustomerId(teamId);
+  if (!result) {
+    throw new Error('Team has no Stripe customer ID');
+  }
+
+  return result;
+}
+
 export async function getActivityLogs() {
   const user = await getUser();
   if (!user) {
@@ -126,4 +169,127 @@ export async function getTeamForUser(userId: number) {
   });
 
   return result?.teamMembers[0]?.team || null;
+}
+
+export type ModulesAndLessonsMaybeComplete = {
+  name: string;
+  description: string | null;
+  isExtraContent: boolean;
+  lessons: {
+    name: string;
+    description: string | null;
+    contentType?: 'MDX' | 'VIDEO';
+    content?: string;
+  }[];
+}[];
+
+export async function getModulesAndLessonsByProductId(
+  productId: string
+): Promise<ModulesAndLessonsMaybeComplete> {
+  const customerId = await getCustomerId();
+
+  const subscription = await getValidSubscriptionByCustomerIdAndProductId(
+    customerId,
+    productId
+  );
+
+  const allModules = await db.query.modules.findMany({
+    columns: {
+      name: true,
+      description: true,
+      isExtraContent: true,
+    },
+    where: eq(modules.productId, productId),
+    with: {
+      lessons: {
+        columns: {
+          name: true,
+          description: true,
+          contentType: true,
+          content: true,
+        },
+        orderBy: (lessons, { asc }) => [asc(lessons.order)],
+      },
+    },
+    orderBy: (modules, { asc }) => [asc(modules.order)],
+  });
+
+  if (!subscription) {
+    throw new Error('User is not subscribed to the product', {
+      cause: 'not_subscribed',
+    });
+  } else if (subscription.status === 'active') {
+    // Return all content if user is subscribed and active
+    return allModules;
+  } else if (subscription.status === 'trialing') {
+    // Don't return extra content if user is on trial
+    return allModules.map((module) => {
+      if (module.isExtraContent) {
+        return {
+          ...module,
+          lessons: module.lessons.map((lesson) => ({
+            name: lesson.name,
+            description: lesson.description,
+          })),
+        };
+      } else {
+        return module;
+      }
+    });
+  } else {
+    throw new Error('Unexpected subscription status');
+  }
+}
+
+export async function getModulesAndLessonsPreviewByProductId(
+  productId: string
+) {
+  const result = await db.query.modules.findMany({
+    where: eq(modules.productId, productId),
+    columns: {
+      name: true,
+      description: true,
+      isExtraContent: true,
+    },
+    with: {
+      lessons: {
+        columns: {
+          name: true,
+          description: true,
+        },
+        orderBy: (lessons, { asc }) => [asc(lessons.order)],
+      },
+    },
+    orderBy: (modules, { asc }) => [asc(modules.order)],
+  });
+
+  return result;
+}
+
+export async function getProductContentById(productId: string) {
+  const product = await getProductById(productId);
+  if (!product.defaultPriceId) {
+    throw new Error('Product has no default price');
+  }
+  const price = await getPriceById(product.defaultPriceId);
+
+  return {
+    ...product,
+    price,
+    modules: await getModulesAndLessonsByProductId(productId),
+  };
+}
+
+export async function getProductPreviewById(productId: string) {
+  const product = await getProductById(productId);
+  if (!product.defaultPriceId) {
+    throw new Error('Product has no default price');
+  }
+  const price = await getPriceById(product.defaultPriceId);
+
+  return {
+    ...product,
+    price,
+    modules: await getModulesAndLessonsPreviewByProductId(productId),
+  };
 }

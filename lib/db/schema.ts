@@ -5,6 +5,8 @@ import {
   text,
   timestamp,
   integer,
+  pgEnum,
+  boolean,
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
@@ -68,6 +70,40 @@ export const invitations = pgTable('invitations', {
   status: varchar('status', { length: 20 }).notNull().default('pending'),
 });
 
+export const modules = pgTable('modules', {
+  id: serial('id').primaryKey(),
+  productId: text('product_id').notNull(), // references to product in stripe
+  name: varchar('name', { length: 100 }).notNull(),
+  description: text('description'),
+  order: integer('order').notNull(),
+  isExtraContent: boolean('is_extra_content').notNull().default(false),
+});
+
+export const contentTypesEnum = pgEnum('content_types', ['MDX', 'VIDEO']);
+
+export const lessons = pgTable('lessons', {
+  id: serial('id').primaryKey(),
+  moduleId: integer('module_id')
+    .notNull()
+    .references(() => modules.id),
+  name: varchar('name', { length: 100 }).notNull(),
+  description: text('description'),
+  contentType: contentTypesEnum('content_type').notNull(),
+  content: text('content').notNull(),
+  order: integer('order').notNull(),
+});
+
+export const modulesRelations = relations(modules, ({ many }) => ({
+  lessons: many(lessons),
+}));
+
+export const lessonsRelations = relations(lessons, ({ one }) => ({
+  module: one(modules, {
+    fields: [lessons.moduleId],
+    references: [modules.id],
+  }),
+}));
+
 export const teamsRelations = relations(teams, ({ many }) => ({
   teamMembers: many(teamMembers),
   activityLogs: many(activityLogs),
@@ -127,6 +163,10 @@ export type TeamDataWithMembers = Team & {
     user: Pick<User, 'id' | 'name' | 'email'>;
   })[];
 };
+export type Module = typeof modules.$inferSelect;
+export type NewModule = typeof modules.$inferInsert;
+export type ModuleLesson = typeof lessons.$inferSelect;
+export type NewModuleLesson = typeof lessons.$inferInsert;
 
 export enum ActivityType {
   SIGN_UP = 'SIGN_UP',
@@ -139,4 +179,9 @@ export enum ActivityType {
   REMOVE_TEAM_MEMBER = 'REMOVE_TEAM_MEMBER',
   INVITE_TEAM_MEMBER = 'INVITE_TEAM_MEMBER',
   ACCEPT_INVITATION = 'ACCEPT_INVITATION',
+}
+
+export enum ContentType {
+  MDX = 'MDX',
+  VIDEO = 'VIDEO',
 }
